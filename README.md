@@ -4,7 +4,7 @@ Keep on top of your team's to-dos.
 
 ## Getting Started
 
-### Prequisities
+### Prerequisites
 
 - Docker Compose
 - Node
@@ -54,7 +54,13 @@ Visit [http://localhost:3000](http://localhost:3000) in your browser to access t
 - `npm run db:studio` - Open Prisma Studio (database GUI)
 - `npm run db:reset` - Reset database and run migrations
 
----
+### Schema Changes
+
+When changing the database schema in `prisma/schema.prisma`, create and check in a new migration to apply the changes in production:
+
+```bash
+npm run db:migrate
+```
 
 ## 🔐 Google OAuth Setup
 
@@ -81,4 +87,28 @@ In your `.env.local` file, add:
 ```env
 GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
+```
+
+## 🔐 GitHub OAuth Setup
+
+To enable login with GitHub, follow these steps:
+
+### 1. Create GitHub OAuth App
+
+1. Go to [GitHub Developer Settings](https://github.com/settings/developers)
+2. Click **OAuth Apps** → **New OAuth App**
+3. Fill in the application details:
+   - **Application name**: Gumboard (or your preferred name)
+   - **Homepage URL**: `http://localhost:3000` (for development)
+   - **Authorization callback URL**: `http://localhost:3000/api/auth/callback/github`
+4. Click **Register application**
+5. Copy the **Client ID** and **Client Secret**
+
+### 2. Add Environment Variables
+
+In your `.env.local` file, add:
+
+```env
+GITHUB_CLIENT_ID=your_github_client_id
+GITHUB_CLIENT_SECRET=your_github_client_secret
 ```

@@ -84,6 +84,7 @@ model Board {
   name           String
   description    String?
   isPublic       Boolean      @default(false)
+  sendSlackUpdates Boolean    @default(true)
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   createdBy      String
@@ -99,7 +100,6 @@ model Note {
   content   String @db.Text
   color     String @default("#fef3c7") // Default yellow color
   done      Boolean @default(false) // Track completion status
-  isChecklist Boolean @default(false) // Track if note is a checklist
   checklistItems Json? // Store checklist items as JSON
   slackMessageId String?
   boardId   String

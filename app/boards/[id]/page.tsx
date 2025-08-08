@@ -1,24 +1,24 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Pencil,
-  Trash2,
-  Edit3,
   Plus,
   ChevronDown,
   Settings,
   LogOut,
   Search,
-  User,
 } from "lucide-react";
 import Link from "next/link";
 import { signOut } from "next-auth/react";
 import { FullPageLoader } from "@/components/ui/loader";
 import { FilterPopover } from "@/components/ui/filter-popover";
+import { Note as NoteCard } from "@/components/note";
+
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,49 +29,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-
-interface ChecklistItem {
-  id: string;
-  content: string;
-  checked: boolean;
-  order: number;
-}
-
-interface Note {
-  id: string;
-  content: string;
-  color: string;
-  done: boolean;
-  createdAt: string;
-  updatedAt: string;
-  isChecklist?: boolean;
-  checklistItems?: ChecklistItem[];
-  user: {
-    id: string;
-    name: string | null;
-    email: string;
-  };
-  board?: {
-    id: string;
-    name: string;
-  };
-}
-
-interface Board {
-  id: string;
-  name: string;
-  description: string | null;
-}
-
-interface User {
-  id: string;
-  name: string | null;
-  email: string;
-  isAdmin: boolean;
-  organization: {
-    name: string;
-  } | null;
-}
+// Use shared types from components
+import type { Note, Board, User } from "@/components/note";
+import type { ChecklistItem } from "@/components/checklist-item";
 
 export default function BoardPage({
   params,
@@ -83,8 +43,7 @@ export default function BoardPage({
   const [allBoards, setAllBoards] = useState<Board[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [editingNote, setEditingNote] = useState<string | null>(null);
-  const [editContent, setEditContent] = useState("");
+  // Inline editing state removed; handled within Note component
   const [showBoardDropdown, setShowBoardDropdown] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [showAddBoard, setShowAddBoard] = useState(false);
@@ -101,18 +60,11 @@ export default function BoardPage({
     endDate: null,
   });
   const [selectedAuthor, setSelectedAuthor] = useState<string | null>(null);
-  const [showDoneNotes, setShowDoneNotes] = useState(false);
+  const [showDoneNotes, setShowDoneNotes] = useState(true);
   const [addingChecklistItem, setAddingChecklistItem] = useState<string | null>(
     null
   );
-  const [newChecklistItemContent, setNewChecklistItemContent] = useState("");
-  const [editingChecklistItem, setEditingChecklistItem] = useState<{
-    noteId: string;
-    itemId: string;
-  } | null>(null);
-  const [editingChecklistItemContent, setEditingChecklistItemContent] =
-    useState("");
-  const [animatingItems, setAnimatingItems] = useState<Set<string>>(new Set());
+  // Per-item edit and animations are handled inside Note component now
   const [deleteNoteDialog, setDeleteNoteDialog] = useState<{
     open: boolean;
     noteId: string;
@@ -122,6 +74,8 @@ export default function BoardPage({
     title: string;
     description: string;
   }>({ open: false, title: "", description: "" });
+  const [boardSettingsDialog, setBoardSettingsDialog] = useState(false);
+  const [boardSettings, setBoardSettings] = useState({ sendSlackUpdates: true });
   const boardRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -165,9 +119,9 @@ export default function BoardPage({
       params.set("author", currentAuthor);
     }
 
-    if (currentShowDone) {
-      // Only add if not default (false)
-      params.set("showDone", "true");
+    if (!currentShowDone) {
+      // Only add if not default (true)
+      params.set("showDone", "false");
     }
 
     const queryString = params.toString();
@@ -205,8 +159,8 @@ export default function BoardPage({
 
     setDateRange({ startDate, endDate });
     setSelectedAuthor(urlAuthor);
-    // Default to false if not specified, otherwise parse the boolean
-    setShowDoneNotes(urlShowDone === null ? false : urlShowDone === "true");
+    // Default to true if not specified, otherwise parse the boolean
+    setShowDoneNotes(urlShowDone === null ? true : urlShowDone === "true");
   };
 
   // Enhanced responsive grid configuration
@@ -282,7 +236,7 @@ export default function BoardPage({
     const paddingHeight = actualNotePadding * 2; // Top and bottom padding
     const minContentHeight = 84; // Minimum content area (3 lines)
 
-    if (note.isChecklist && note.checklistItems) {
+    if (note.checklistItems) {
       // For checklist items, calculate height based on number of items
       const itemHeight = 32; // Each checklist item is about 32px tall (text + padding)
       const itemSpacing = 8; // Space between items
@@ -496,17 +450,8 @@ export default function BoardPage({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (editingNote) {
-          setEditingNote(null);
-          setEditContent("");
-        }
         if (addingChecklistItem) {
           setAddingChecklistItem(null);
-          setNewChecklistItemContent("");
-        }
-        if (editingChecklistItem) {
-          setEditingChecklistItem(null);
-          setEditingChecklistItemContent("");
         }
         if (showBoardDropdown) {
           setShowBoardDropdown(false);
@@ -532,10 +477,10 @@ export default function BoardPage({
     showBoardDropdown,
     showUserDropdown,
     showAddBoard,
-    editingNote,
     addingChecklistItem,
-    editingChecklistItem,
   ]);
+
+  // Removed debounce cleanup effect; editing is scoped to Note
 
   // Enhanced responsive handling with debounced resize and better breakpoints
   useEffect(() => {
@@ -676,17 +621,35 @@ export default function BoardPage({
   };
 
   // Get unique authors for dropdown
-  const uniqueAuthors = getUniqueAuthors(notes);
+  const uniqueAuthors = useMemo(() => getUniqueAuthors(notes), [notes]);
 
   // Get filtered and sorted notes for display
-  const filteredNotes = filterAndSortNotes(
-    notes,
-    searchTerm,
-    dateRange,
-    selectedAuthor,
-    showDoneNotes,
-    user
+  const filteredNotes = useMemo(
+    () =>
+      filterAndSortNotes(
+        notes,
+        searchTerm,
+        dateRange,
+        selectedAuthor,
+        showDoneNotes,
+        user
+      ),
+    [notes, searchTerm, dateRange, selectedAuthor, showDoneNotes, user]
   );
+  const layoutNotes = useMemo(
+    () => (isMobile ? calculateMobileLayout() : calculateGridLayout()),
+    [isMobile, filteredNotes, calculateMobileLayout, calculateGridLayout]
+  );
+
+  const boardHeight = useMemo(() => {
+    if (layoutNotes.length === 0) {
+      return "calc(100vh - 64px)";
+    }
+    const maxBottom = Math.max(...layoutNotes.map((note) => note.y + note.height));
+    const minHeight = typeof window !== "undefined" && window.innerWidth < 768 ? 500 : 600;
+    const calculatedHeight = Math.max(minHeight, maxBottom + 100);
+    return `${calculatedHeight}px`;
+  }, [layoutNotes]);
 
   const fetchBoardData = async () => {
     try {
@@ -733,6 +696,7 @@ export default function BoardPage({
         if (boardResponse.ok) {
           const { board } = await boardResponse.json();
           setBoard(board);
+          setBoardSettings({ sendSlackUpdates: (board as { sendSlackUpdates?: boolean })?.sendSlackUpdates ?? true });
         }
 
         // Fetch notes for specific board
@@ -754,6 +718,87 @@ export default function BoardPage({
       console.error("Error fetching board data:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Adapter: bridge component Note -> existing update handler
+  const handleUpdateNoteFromComponent = async (
+    updatedNote: { id: string; content: string }
+  ) => {
+    await handleUpdateNote(updatedNote.id, updatedNote.content);
+  };
+
+  // Adapter: component Note provides content directly
+  const handleAddChecklistItemFromComponent = async (
+    noteId: string,
+    content: string
+  ) => {
+    if (!content.trim()) return;
+
+    try {
+      const currentNote = notes.find((n) => n.id === noteId);
+      if (!currentNote) return;
+
+      const targetBoardId =
+        boardId === "all-notes" && currentNote.board?.id
+          ? currentNote.board.id
+          : boardId;
+
+      const newItem: ChecklistItem = {
+        id: `item-${Date.now()}`,
+        content: content.trim(),
+        checked: false,
+        order: (currentNote.checklistItems || []).length,
+      };
+
+      const updatedItems = [...(currentNote.checklistItems || []), newItem];
+
+      const allItemsChecked = updatedItems.every((item) => item.checked);
+
+      const optimisticNote = {
+        ...currentNote,
+        checklistItems: updatedItems,
+        done: allItemsChecked,
+      };
+
+      setNotes(notes.map((n) => (n.id === noteId ? optimisticNote : n)));
+
+      const response = await fetch(
+        `/api/boards/${targetBoardId}/notes/${noteId}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            checklistItems: updatedItems,
+            done: allItemsChecked,
+          }),
+        }
+      );
+
+      if (response.ok) {
+        const { note } = await response.json();
+        setNotes(notes.map((n) => (n.id === noteId ? note : n)));
+      } else {
+        setNotes(notes.map((n) => (n.id === noteId ? currentNote : n)));
+        setErrorDialog({
+          open: true,
+          title: "Failed to Add Item",
+          description: "Failed to add checklist item. Please try again.",
+        });
+      }
+    } catch (error) {
+      console.error("Error adding checklist item:", error);
+      const currentNote = notes.find((n) => n.id === noteId);
+      if (currentNote) {
+        setNotes(notes.map((n) => (n.id === noteId ? currentNote : n)));
+      }
+      setErrorDialog({
+        open: true,
+        title: "Connection Error",
+        description: "Failed to add item. Please check your connection.",
+      });
     }
   };
 
@@ -782,7 +827,6 @@ export default function BoardPage({
           },
           body: JSON.stringify({
             content: "",
-            isChecklist: true,
             checklistItems: [],
             ...(isAllNotesView && { boardId: targetBoardId }),
           }),
@@ -793,7 +837,6 @@ export default function BoardPage({
         const { note } = await response.json();
         setNotes([...notes, note]);
         setAddingChecklistItem(note.id);
-        setNewChecklistItemContent("");
       }
     } catch (error) {
       console.error("Error creating note:", error);
@@ -804,11 +847,24 @@ export default function BoardPage({
     try {
       // Find the note to get its board ID for all notes view
       const currentNote = notes.find((n) => n.id === noteId);
+      if (!currentNote) return;
       const targetBoardId =
-        boardId === "all-notes" && currentNote?.board?.id
+        boardId === "all-notes" && currentNote.board?.id
           ? currentNote.board.id
           : boardId;
 
+      // Store original content for potential rollback
+      const originalContent = currentNote.content;
+
+      // OPTIMISTIC UPDATE: Update UI immediately
+      const optimisticNote = {
+        ...currentNote,
+        content: content,
+      };
+
+      setNotes(notes.map((n) => (n.id === noteId ? optimisticNote : n)));
+
+      // Send to server in background
       const response = await fetch(
         `/api/boards/${targetBoardId}/notes/${noteId}`,
         {
@@ -821,11 +877,17 @@ export default function BoardPage({
       );
 
       if (response.ok) {
+        // Server succeeded, confirm with actual server response
         const { note } = await response.json();
         setNotes(notes.map((n) => (n.id === noteId ? note : n)));
-        setEditingNote(null);
-        setEditContent("");
       } else {
+        // Server failed, revert to original content
+        console.error("Server error, reverting optimistic update");
+        const revertedNote = { ...currentNote, content: originalContent };
+        setNotes(notes.map((n) => (n.id === noteId ? revertedNote : n)));
+        
+        // Show error dialog; editing handled inside Note component
+
         const errorData = await response.json();
         setErrorDialog({
           open: true,
@@ -835,10 +897,17 @@ export default function BoardPage({
       }
     } catch (error) {
       console.error("Error updating note:", error);
+      
+      // Revert optimistic update on network error
+      const currentNote = notes.find((n) => n.id === noteId);
+      if (currentNote) {
+        // Editing handled within Note component; just keep UI consistent
+      }
+      
       setErrorDialog({
         open: true,
-        title: "Failed to update note",
-        description: "Failed to update note",
+        title: "Connection Error", 
+        description: "Failed to save note. Please try again.",
       });
     }
   };
@@ -886,34 +955,6 @@ export default function BoardPage({
     }
   };
 
-  const handleToggleDone = async (noteId: string, currentDone: boolean) => {
-    try {
-      // Find the note to get its board ID for all notes view
-      const currentNote = notes.find((n) => n.id === noteId);
-      const targetBoardId =
-        boardId === "all-notes" && currentNote?.board?.id
-          ? currentNote.board.id
-          : boardId;
-
-      const response = await fetch(
-        `/api/boards/${targetBoardId}/notes/${noteId}`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ done: !currentDone }),
-        }
-      );
-
-      if (response.ok) {
-        const { note } = await response.json();
-        setNotes(notes.map((n) => (n.id === noteId ? note : n)));
-      }
-    } catch (error) {
-      console.error("Error toggling note done status:", error);
-    }
-  };
 
   const handleSignOut = async () => {
     await signOut();
@@ -961,53 +1002,26 @@ export default function BoardPage({
     }
   };
 
-  const handleAddChecklistItem = async (noteId: string) => {
-    if (!newChecklistItemContent.trim()) return;
-
+  const handleUpdateBoardSettings = async (settings: { sendSlackUpdates: boolean }) => {
     try {
-      const currentNote = notes.find((n) => n.id === noteId);
-      if (!currentNote) return;
-
-      const targetBoardId =
-        boardId === "all-notes" && currentNote.board?.id
-          ? currentNote.board.id
-          : boardId;
-
-      const newItem: ChecklistItem = {
-        id: `item-${Date.now()}`,
-        content: newChecklistItemContent,
-        checked: false,
-        order: (currentNote.checklistItems || []).length,
-      };
-
-      const updatedItems = [...(currentNote.checklistItems || []), newItem];
-
-      // Check if all items are checked to mark note as done
-      const allItemsChecked = updatedItems.every((item) => item.checked);
-
-      const response = await fetch(
-        `/api/boards/${targetBoardId}/notes/${noteId}`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            checklistItems: updatedItems,
-            done: allItemsChecked,
-          }),
-        }
-      );
+      const response = await fetch(`/api/boards/${boardId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings)
+      });
 
       if (response.ok) {
-        const { note } = await response.json();
-        setNotes(notes.map((n) => (n.id === noteId ? note : n)));
-        setNewChecklistItemContent("");
+        const { board } = await response.json();
+        setBoard(board);
+        setBoardSettings({ sendSlackUpdates: board.sendSlackUpdates });
+        setBoardSettingsDialog(false);
       }
     } catch (error) {
-      console.error("Error adding checklist item:", error);
+      console.error("Error updating board settings:", error);
     }
   };
+
+  // Note: add-checklist-item logic is handled by the Note component via handleAddChecklistItemFromComponent
 
   const handleToggleChecklistItem = async (noteId: string, itemId: string) => {
     try {
@@ -1019,49 +1033,67 @@ export default function BoardPage({
           ? currentNote.board.id
           : boardId;
 
+      // OPTIMISTIC UPDATE
       const updatedItems = currentNote.checklistItems.map((item) =>
         item.id === itemId ? { ...item, checked: !item.checked } : item
       );
 
-      // Add item to animating set for visual feedback
-      setAnimatingItems((prev) => new Set([...prev, itemId]));
+      const sortedItems = [
+        ...updatedItems
+          .filter((item) => !item.checked)
+          .sort((a, b) => a.order - b.order),
+        ...updatedItems
+          .filter((item) => item.checked)
+          .sort((a, b) => a.order - b.order),
+      ];
 
-      // Small delay to show animation before reordering
-      setTimeout(() => {
-        // Sort items: unchecked first, then checked
-        const sortedItems = [
-          ...updatedItems
-            .filter((item) => !item.checked)
-            .sort((a, b) => a.order - b.order),
-          ...updatedItems
-            .filter((item) => item.checked)
-            .sort((a, b) => a.order - b.order),
-        ];
+      const allItemsChecked = sortedItems.every((item) => item.checked);
 
-        // Check if all items are checked to mark note as done
-        const allItemsChecked = sortedItems.every((item) => item.checked);
+      // OPTIMISTIC UPDATE
+      const optimisticNote = {
+        ...currentNote,
+        checklistItems: sortedItems,
+        done: allItemsChecked,
+      };
 
-        fetch(`/api/boards/${targetBoardId}/notes/${noteId}`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            checklistItems: sortedItems,
-            done: allItemsChecked,
-          }),
-        })
-          .then((response) => response.json())
-          .then(({ note }) => {
-            setNotes(notes.map((n) => (n.id === noteId ? note : n)));
-            // Remove from animating set after update
-            setAnimatingItems((prev) => {
-              const newSet = new Set(prev);
-              newSet.delete(itemId);
-              return newSet;
+      setNotes(notes.map((n) => (n.id === noteId ? optimisticNote : n)));
+
+      // Send to server in background
+      fetch(`/api/boards/${targetBoardId}/notes/${noteId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          checklistItems: sortedItems,
+          done: allItemsChecked,
+        }),
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            console.error("Server error, reverting optimistic update");
+            setNotes(notes.map((n) => (n.id === noteId ? currentNote : n)));
+            
+            setErrorDialog({
+              open: true,
+              title: "Update Failed",
+              description: "Failed to update checklist item. Please try again.",
             });
+          } else {
+            const { note } = await response.json();
+            setNotes(notes.map((n) => (n.id === noteId ? note : n)));
+          }
+        })
+        .catch((error) => {
+          console.error("Error toggling checklist item:", error);
+          setNotes(notes.map((n) => (n.id === noteId ? currentNote : n)));
+          
+          setErrorDialog({
+            open: true,
+            title: "Connection Error",
+            description: "Failed to sync changes. Please check your connection.",
           });
-      }, 200);
+        });
     } catch (error) {
       console.error("Error toggling checklist item:", error);
     }
@@ -1077,6 +1109,10 @@ export default function BoardPage({
           ? currentNote.board.id
           : boardId;
 
+      // Store the item being deleted for potential rollback
+      const deletedItem = currentNote.checklistItems.find((item) => item.id === itemId);
+      if (!deletedItem) return;
+
       const updatedItems = currentNote.checklistItems.filter(
         (item) => item.id !== itemId
       );
@@ -1087,6 +1123,16 @@ export default function BoardPage({
           ? updatedItems.every((item) => item.checked)
           : false;
 
+      // OPTIMISTIC UPDATE: Update UI immediately
+      const optimisticNote = {
+        ...currentNote,
+        checklistItems: updatedItems,
+        done: allItemsChecked,
+      };
+
+      setNotes(notes.map((n) => (n.id === noteId ? optimisticNote : n)));
+
+      // Send to server in background
       const response = await fetch(
         `/api/boards/${targetBoardId}/notes/${noteId}`,
         {
@@ -1104,13 +1150,34 @@ export default function BoardPage({
       if (response.ok) {
         const { note } = await response.json();
         setNotes(notes.map((n) => (n.id === noteId ? note : n)));
+      } else {
+        console.error("Server error, reverting optimistic update");
+        setNotes(notes.map((n) => (n.id === noteId ? currentNote : n)));
+
+        setErrorDialog({
+          open: true,
+          title: "Failed to Delete Item",
+          description: "Failed to delete checklist item. Please try again.",
+        });
       }
     } catch (error) {
       console.error("Error deleting checklist item:", error);
+      
+      // Revert optimistic update on network error
+      const currentNote = notes.find((n) => n.id === noteId);
+      if (currentNote) {
+        setNotes(notes.map((n) => (n.id === noteId ? currentNote : n)));
+      }
+      
+      setErrorDialog({
+        open: true,
+        title: "Connection Error",
+        description: "Failed to delete item. Please check your connection.",
+      });
     }
   };
 
-  const handleEditChecklistItem = async (
+  const handleEditChecklistItem = useCallback(async (
     noteId: string,
     itemId: string,
     content: string
@@ -1148,13 +1215,13 @@ export default function BoardPage({
       if (response.ok) {
         const { note } = await response.json();
         setNotes(notes.map((n) => (n.id === noteId ? note : n)));
-        setEditingChecklistItem(null);
-        setEditingChecklistItemContent("");
       }
     } catch (error) {
       console.error("Error editing checklist item:", error);
     }
-  };
+  }, [notes, boardId]);
+
+  // Removed external debounce; Note component handles UX concerns
 
   const handleToggleAllChecklistItems = async (noteId: string) => {
     try {
@@ -1270,8 +1337,6 @@ export default function BoardPage({
       if (response.ok) {
         const { note } = await response.json();
         setNotes(notes.map((n) => (n.id === noteId ? note : n)));
-        setEditingChecklistItem({ noteId, itemId: newItem.id });
-        setEditingChecklistItemContent(secondHalf);
       }
     } catch (error) {
       console.error("Error splitting checklist item:", error);
@@ -1290,26 +1355,6 @@ export default function BoardPage({
     );
   }
 
-  const layoutNotes = isMobile
-    ? calculateMobileLayout()
-    : calculateGridLayout();
-
-  // Calculate the total height needed for the board area
-  const calculateBoardHeight = () => {
-    if (layoutNotes.length === 0) {
-      return "calc(100vh - 64px)"; // Default minimum height when no notes
-    }
-
-    // Find the bottommost note position
-    const maxBottom = Math.max(
-      ...layoutNotes.map((note) => note.y + note.height)
-    );
-    const minHeight =
-      typeof window !== "undefined" && window.innerWidth < 768 ? 500 : 600; // Different min heights for mobile/desktop
-    const calculatedHeight = Math.max(minHeight, maxBottom + 100); // Add 100px padding at bottom
-
-    return `${calculatedHeight}px`;
-  };
 
   return (
     <div className="min-h-screen max-w-screen bg-background dark:bg-zinc-950">
@@ -1397,6 +1442,19 @@ export default function BoardPage({
                       <Plus className="w-4 h-4 mr-2" />
                       <span className="font-medium">Create new board</span>
                     </button>
+                    {boardId !== "all-notes" && (
+                      <button
+                        onClick={() => {
+                          setBoardSettings({ sendSlackUpdates: (board as { sendSlackUpdates?: boolean })?.sendSlackUpdates ?? true });
+                          setBoardSettingsDialog(true);
+                          setShowBoardDropdown(false);
+                        }}
+                        className="flex items-center w-full px-4 py-2 text-sm text-foreground dark:text-zinc-100 hover:bg-accent dark:hover:bg-zinc-800"
+                      >
+                        <Settings className="w-4 h-4 mr-2" />
+                        <span className="font-medium">Board settings</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -1436,6 +1494,7 @@ export default function BoardPage({
                 <Search className="h-4 w-4 text-muted-foreground dark:text-zinc-400" />
               </div>
               <input
+                aria-label="Search notes"
                 type="text"
                 placeholder="Search notes..."
                 value={searchTerm}
@@ -1528,7 +1587,7 @@ export default function BoardPage({
         ref={boardRef}
         className="relative w-full bg-gray-50 dark:bg-zinc-950"
         style={{
-          height: calculateBoardHeight(),
+          height: boardHeight,
           minHeight: "calc(100vh - 64px)", // Account for header height
         }}
       >
@@ -1587,12 +1646,12 @@ export default function BoardPage({
                   setSearchTerm("");
                   setDateRange({ startDate: null, endDate: null });
                   setSelectedAuthor(null);
-                  setShowDoneNotes(false);
+                  setShowDoneNotes(true);
                   updateURL(
                     "",
                     { startDate: null, endDate: null },
                     null,
-                    false
+                    true
                   );
                 }}
                 className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-200 text-xs underline"
@@ -1606,408 +1665,35 @@ export default function BoardPage({
         {/* Notes */}
         <div className="relative w-full h-full">
           {layoutNotes.map((note) => (
-            <div
+            <NoteCard
               key={note.id}
-              className={`absolute rounded-lg shadow-lg select-none group transition-all duration-200 flex flex-col border border-gray-200 dark:border-gray-600 box-border note-background ${
-                note.done ? "opacity-80" : ""
-              }`}
+              note={note as Note}
+              currentUser={user as User}
+              onUpdate={handleUpdateNoteFromComponent}
+              onDelete={handleDeleteNote}
+              onAddChecklistItem={handleAddChecklistItemFromComponent}
+              onToggleChecklistItem={handleToggleChecklistItem}
+              onEditChecklistItem={handleEditChecklistItem}
+              onDeleteChecklistItem={handleDeleteChecklistItem}
+              onSplitChecklistItem={handleSplitChecklistItem}
+              onToggleAllChecklistItems={handleToggleAllChecklistItems}
+              showBoardName={boardId === "all-notes"}
+              className="note-background"
               style={{
+                position: "absolute",
+                left: note.x,
+                top: note.y,
+                width: note.width,
+                height: note.height,
+                padding: `${getResponsiveConfig().notePadding}px`,
                 backgroundColor:
                   typeof window !== "undefined" &&
                   window.matchMedia &&
                   window.matchMedia("(prefers-color-scheme: dark)").matches
                     ? `${note.color}20`
                     : note.color,
-                left: note.x,
-                top: note.y,
-                width: note.width,
-                height: note.height,
-                padding: `${getResponsiveConfig().notePadding}px`,
               }}
-            >
-              {/* User Info Header */}
-              <div className="flex items-start justify-between mb-4 flex-shrink-0">
-                <div className="flex items-center space-x-2">
-                  <div className="w-7 h-7 bg-white bg-opacity-40 dark:bg-gray-800 dark:bg-opacity-40 rounded-full flex items-center justify-center shadow-sm">
-                    <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">
-                      {note.user.name
-                        ? note.user.name.charAt(0).toUpperCase()
-                        : note.user.email.charAt(0).toUpperCase()}
-                    </span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-sm font-bold text-gray-700 dark:text-gray-200 truncate max-w-20">
-                      {note.user.name
-                        ? note.user.name.split(" ")[0]
-                        : note.user.email.split("@")[0]}
-                    </span>
-                    <div className="flex flex-col">
-                      {!note.isChecklist && (
-                        <span className="text-xs text-gray-500 dark:text-gray-400 opacity-70">
-                          {new Date(note.createdAt).toLocaleDateString(
-                            "en-US",
-                            {
-                              month: "short",
-                              day: "numeric",
-                              year:
-                                new Date(note.createdAt).getFullYear() !==
-                                new Date().getFullYear()
-                                  ? "numeric"
-                                  : undefined,
-                            }
-                          )}
-                        </span>
-                      )}
-                      {boardId === "all-notes" && note.board && (
-                        <span className="text-xs text-blue-600 dark:text-blue-400 opacity-80 font-medium truncate max-w-20">
-                          {note.board.name}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-2">
-                  {/* Show edit/delete buttons for note author or admin */}
-                  {(user?.id === note.user.id || user?.isAdmin) && (
-                    <div className="flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {!note.isChecklist && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingNote(note.id);
-                            setEditContent(note.content);
-                          }}
-                          className="p-1 text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded"
-                        >
-                          <Edit3 className="w-3 h-3" />
-                        </button>
-                      )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteNote(note.id);
-                        }}
-                        className="p-1 text-gray-600 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 rounded"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  )}
-                  {/* Beautiful checkbox for done status - show to author or admin */}
-                  {(user?.id === note.user.id || user?.isAdmin) && (
-                    <div className="flex items-center">
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (note.isChecklist) {
-                            handleToggleAllChecklistItems(note.id);
-                          } else {
-                            handleToggleDone(note.id, note.done);
-                          }
-                        }}
-                        className={`
-                          relative w-5 h-5 rounded-md border-2 transition-all duration-200 flex items-center justify-center cursor-pointer hover:scale-110 z-10
-                          ${
-                            note.done
-                              ? "bg-green-500 dark:bg-green-600 border-green-500 dark:border-green-600 text-white shadow-lg opacity-100"
-                              : "bg-white dark:bg-gray-800 bg-opacity-60 dark:bg-opacity-60 border-gray-400 dark:border-gray-500 hover:border-green-400 dark:hover:border-green-500 hover:bg-green-50 dark:hover:bg-green-900/20 opacity-30 group-hover:opacity-100"
-                          }
-                        `}
-                        title={
-                          note.isChecklist
-                            ? note.done
-                              ? "Uncheck all items"
-                              : "Check all items"
-                            : note.done
-                              ? "Mark as not done"
-                              : "Mark as done"
-                        }
-                        type="button"
-                        style={{ pointerEvents: "auto" }}
-                      >
-                        {note.done && (
-                          <svg
-                            className="w-3 h-3 text-white"
-                            fill="none"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="2"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                          >
-                            <path d="M5 13l4 4L19 7"></path>
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {editingNote === note.id && !note.isChecklist ? (
-                <div className="flex-1 min-h-0">
-                  <textarea
-                    value={editContent}
-                    onChange={(e) => {
-                      const newValue = e.target.value;
-                      setEditContent(newValue);
-                    }}
-                    className="w-full h-full p-2 bg-transparent border-none resize-none focus:outline-none text-base leading-7 text-gray-800 dark:text-gray-200"
-                    placeholder="Enter note content..."
-                    onBlur={() => handleUpdateNote(note.id, editContent)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && e.ctrlKey) {
-                        handleUpdateNote(note.id, editContent);
-                      }
-                      if (e.key === "Escape") {
-                        setEditingNote(null);
-                        setEditContent("");
-                      }
-                      if (e.key === "Backspace" && editContent.trim() === "") {
-                        handleDeleteNote(note.id);
-                      }
-                    }}
-                    onFocus={(e) => {
-                      // Set cursor at the end of the text
-                      const length = e.target.value.length;
-                      e.target.setSelectionRange(length, length);
-                    }}
-                    autoFocus
-                  />
-                </div>
-              ) : note.isChecklist ? (
-                <div className="flex-1 flex flex-col">
-                  <div className="overflow-y-auto max-h-48 space-y-1 flex-1">
-                    {/* Checklist Items */}
-                    {note.checklistItems?.map((item) => (
-                    <div
-                      key={item.id}
-                      className={`flex items-center group/item hover:bg-white dark:hover:bg-gray-800 hover:bg-opacity-40 dark:hover:bg-opacity-40 rounded pr-3 py-1 -ml-0 -mr-0 transition-all duration-200 ${
-                        animatingItems.has(item.id) ? "animate-pulse" : ""
-                      }`}
-                    >
-                      {/* Checkbox */}
-                      <button
-                        onClick={() =>
-                          handleToggleChecklistItem(note.id, item.id)
-                        }
-                        className={`
-                          relative w-4 h-4 rounded border-2 transition-all duration-200 flex items-center justify-center cursor-pointer hover:scale-110 mr-3 flex-shrink-0 ml-2
-                          ${
-                            item.checked
-                              ? "bg-green-500 dark:bg-green-600 border-green-500 dark:border-green-600 text-white"
-                              : "bg-white dark:bg-gray-800 bg-opacity-60 dark:bg-opacity-60 border-gray-400 dark:border-gray-500 hover:border-green-400 dark:hover:border-green-500"
-                          }
-                        `}
-                      >
-                        {item.checked && (
-                          <svg
-                            className="w-3 h-3 text-white"
-                            fill="none"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="2"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                          >
-                            <path d="M5 13l4 4L19 7"></path>
-                          </svg>
-                        )}
-                      </button>
-
-                      {/* Content */}
-                      {editingChecklistItem?.noteId === note.id &&
-                      editingChecklistItem?.itemId === item.id ? (
-                        <input
-                          type="text"
-                          value={editingChecklistItemContent}
-                          onChange={(e) =>
-                            setEditingChecklistItemContent(e.target.value)
-                          }
-                          className="flex-1 bg-transparent border-none outline-none text-sm leading-6 text-gray-800 dark:text-gray-200"
-                          onBlur={() =>
-                            handleEditChecklistItem(
-                              note.id,
-                              item.id,
-                              editingChecklistItemContent
-                            )
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              const target = e.target as HTMLInputElement;
-                              const cursorPosition = target.selectionStart || 0;
-                              handleSplitChecklistItem(
-                                note.id,
-                                item.id,
-                                editingChecklistItemContent,
-                                cursorPosition
-                              );
-                            }
-                            if (e.key === "Escape") {
-                              setEditingChecklistItem(null);
-                              setEditingChecklistItemContent("");
-                            }
-                            if (
-                              e.key === "Backspace" &&
-                              editingChecklistItemContent.trim() === ""
-                            ) {
-                              e.preventDefault();
-
-                              const currentNote = notes.find(
-                                (n) => n.id === note.id
-                              );
-                              if (currentNote?.checklistItems) {
-                                const currentItem =
-                                  currentNote.checklistItems.find(
-                                    (i) => i.id === item.id
-                                  );
-                                if (currentItem) {
-                                  const sortedItems = [
-                                    ...currentNote.checklistItems,
-                                  ].sort((a, b) => a.order - b.order);
-                                  const currentIndex = sortedItems.findIndex(
-                                    (i) => i.id === item.id
-                                  );
-
-                                  if (currentIndex > 0) {
-                                    const previousItem =
-                                      sortedItems[currentIndex - 1];
-
-                                    handleDeleteChecklistItem(note.id, item.id);
-
-                                    setTimeout(() => {
-                                      setEditingChecklistItem({
-                                        noteId: note.id,
-                                        itemId: previousItem.id,
-                                      });
-                                      setEditingChecklistItemContent(
-                                        previousItem.content
-                                      );
-                                    }, 0);
-                                  } else {
-                                    handleDeleteChecklistItem(note.id, item.id);
-                                  }
-                                } else {
-                                  handleDeleteChecklistItem(note.id, item.id);
-                                }
-                              } else {
-                                handleDeleteChecklistItem(note.id, item.id);
-                              }
-                            }
-                          }}
-                          autoFocus
-                        />
-                      ) : (
-                        <span
-                          className={`flex-1 text-sm leading-6 cursor-pointer ${
-                            item.checked
-                              ? "text-gray-500 dark:text-gray-400 line-through opacity-70"
-                              : "text-gray-800 dark:text-gray-200"
-                          }`}
-                          onClick={() => {
-                            if (user?.id === note.user.id || user?.isAdmin) {
-                              setEditingChecklistItem({
-                                noteId: note.id,
-                                itemId: item.id,
-                              });
-                              setEditingChecklistItemContent(item.content);
-                            }
-                          }}
-                        >
-                          {item.content || (
-                            <span className="text-gray-400 dark:text-gray-500 italic">
-                              Click to edit...
-                            </span>
-                          )}
-                        </span>
-                      )}
-
-                      {/* Delete button */}
-                      {(user?.id === note.user.id || user?.isAdmin) && (
-                        <button
-                          onClick={() =>
-                            handleDeleteChecklistItem(note.id, item.id)
-                          }
-                          className="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 text-gray-600 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 rounded ml-2"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      )}
-                    </div>
-                    ))}
-                  </div>
-
-                  {/* Add new item input */}
-                  {addingChecklistItem === note.id && (
-                    <div className="flex items-center group/item hover:bg-white dark:hover:bg-gray-800 hover:bg-opacity-40 dark:hover:bg-opacity-40 rounded pr-3 py-1 -ml-0 -mr-0 transition-all duration-200">
-                      <div className="w-4 h-4 rounded border-2 border-gray-400 dark:border-gray-500 mr-3 flex-shrink-0 bg-white dark:bg-gray-800 bg-opacity-60 dark:bg-opacity-60 ml-2"></div>
-                      <input
-                        type="text"
-                        value={newChecklistItemContent}
-                        onChange={(e) =>
-                          setNewChecklistItemContent(e.target.value)
-                        }
-                        className="flex-1 bg-transparent border-none outline-none text-sm leading-6 text-gray-800 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400"
-                        placeholder="Add new item..."
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            handleAddChecklistItem(note.id);
-                          }
-                          if (e.key === "Escape") {
-                            setAddingChecklistItem(null);
-                            setNewChecklistItemContent("");
-                          }
-                          if (
-                            e.key === "Backspace" &&
-                            newChecklistItemContent.trim() === ""
-                          ) {
-                            setAddingChecklistItem(null);
-                            setNewChecklistItemContent("");
-                          }
-                        }}
-                        onBlur={() => {
-                          if (newChecklistItemContent.trim()) {
-                            handleAddChecklistItem(note.id);
-                          }
-                          // Don't close the input on blur - let user continue adding items
-                          // Only close on explicit Escape key
-                        }}
-                        autoFocus
-                      />
-                    </div>
-                  )}
-
-                  {/* Add task button - everpresent for checklist notes and authorized users */}
-                  {note.isChecklist &&
-                    (user?.id === note.user.id || user?.isAdmin) && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setAddingChecklistItem(note.id);
-                        }}
-                        className="flex items-center justify-start text-slate-600 dark:text-gray-300 hover:text-slate-900 dark:hover:text-gray-100 transition-colors duration-200 mt-2 ml-2 text-sm opacity-70 hover:opacity-100"
-                      >
-                        <Plus className="mr-2 h-4 w-4" />
-                        Add task
-                      </button>
-                    )}
-                </div>
-              ) : (
-                <div className="flex-1 overflow-hidden flex flex-col relative">
-                  <p
-                    className={`text-base whitespace-pre-wrap break-words leading-7 m-0 p-0 flex-1 transition-all duration-200 ${
-                      note.done
-                        ? "text-gray-500 dark:text-gray-400 opacity-70 line-through"
-                        : "text-gray-800 dark:text-gray-200"
-                    }`}
-                  >
-                    {note.content}
-                  </p>
-                </div>
-              )}
-            </div>
+            />
           ))}
         </div>
 
@@ -2051,12 +1737,12 @@ export default function BoardPage({
                   setSearchTerm("");
                   setDateRange({ startDate: null, endDate: null });
                   setSelectedAuthor(null);
-                  setShowDoneNotes(false);
+                  setShowDoneNotes(true);
                   updateURL(
                     "",
                     { startDate: null, endDate: null },
                     null,
-                    false
+                    true
                   );
                 }}
                 variant="outline"
@@ -2210,6 +1896,47 @@ export default function BoardPage({
               className="bg-red-600 hover:bg-red-700 text-white dark:bg-red-600 dark:hover:bg-red-700"
             >
               OK
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={boardSettingsDialog} onOpenChange={setBoardSettingsDialog}>
+        <AlertDialogContent className="bg-white dark:bg-zinc-950 border border-border dark:border-zinc-800">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-foreground dark:text-zinc-100">
+              Board settings
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-foreground dark:text-zinc-400">
+              Configure settings for &quot;{board?.name}&quot; board.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          
+          <div className="py-4">
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="sendSlackUpdates"
+                checked={boardSettings.sendSlackUpdates}
+                onCheckedChange={(checked) => 
+                  setBoardSettings({ sendSlackUpdates: checked as boolean })
+                }
+              />
+              <label 
+                htmlFor="sendSlackUpdates" 
+                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 text-foreground dark:text-zinc-100"
+              >
+                Send updates to Slack
+              </label>
+            </div>
+            <p className="text-xs text-muted-foreground dark:text-zinc-400 mt-1 ml-6">
+              When enabled, note updates will be sent to your organization&apos;s Slack channel
+            </p>
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => handleUpdateBoardSettings(boardSettings)}>
+              Save settings
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
